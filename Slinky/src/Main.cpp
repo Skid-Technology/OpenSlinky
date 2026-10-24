@@ -3,9 +3,43 @@
 #include "Injector.hpp"
 #include "ProcessUtil.hpp"
 #include <cstdio>
+#include <cwctype>
+#include <string>
 #include <vector>
 
 using namespace Slinky;
+
+// Titles used by the clients we support (lower-case compare).
+static int TitleScore(const std::wstring& title) {
+    std::wstring t = title;
+    for (auto& ch : t) ch = (wchar_t)towlower(ch);
+    int score = 0;
+    if (t.find(L"minecraft") != std::wstring::npos) score += 4;
+    if (t.find(L"lunar") != std::wstring::npos) score += 4;
+    if (t.find(L"badlion") != std::wstring::npos) score += 4;
+    if (t.find(L"1.8") != std::wstring::npos) score += 1;
+    return score;
+}
+
+// Picks the window that really belongs to a Minecraft JVM. Any Java program with a window
+// (launchers, IDEs, other tools) used to be treated as the game; now the JVM must have LWJGL
+// loaded. After allowFallback is set we fall back to the best title match, then the first window.
+static bool PickTarget(const std::vector<TargetWindow>& windows, bool allowFallback, TargetWindow& out) {
+    int best = -1;
+    for (const TargetWindow& w : windows) {
+        if (!ProcessUtil::IsModuleLoaded(w.pid, L"lwjgl")) continue;
+        int score = 10 + TitleScore(w.title);
+        if (score > best) { best = score; out = w; }
+    }
+    if (best >= 0) return true;
+    if (!allowFallback || windows.empty()) return false;
+    best = -1;
+    for (const TargetWindow& w : windows) {
+        int score = TitleScore(w.title);
+        if (score > best) { best = score; out = w; }
+    }
+    return true;
+}
 
 int main() {
     ConsoleUI::Initialize();
@@ -27,11 +61,14 @@ int main() {
     DWORD startWait = GetTickCount();
     const DWORD timeoutWait = 180000;
     std::vector<TargetWindow> windows;
+    TargetWindow target;
+    bool found = false;
     int dotCount = 0;
 
     while (GetTickCount() - startWait < timeoutWait) {
         windows = ProcessUtil::FindMinecraftWindows();
-        if (!windows.empty()) {
+        if (PickTarget(windows, GetTickCount() - startWait > 20000, target)) {
+            found = true;
             break;
         }
 
@@ -44,15 +81,13 @@ int main() {
         Sleep(500);
     }
 
-    if (windows.empty()) {
+    if (!found) {
         ConsoleUI::SetStatusText("Minecraft not found after 3 minutes.");
         Sleep(3000);
         ConsoleUI::StopAnimation();
         ConsoleUI::Shutdown();
         return 1;
     }
-
-    TargetWindow target = windows[0];
 
     char foundMsg[256];
     char titleUtf8[256] = { 0 };

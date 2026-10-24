@@ -4,8 +4,6 @@
   <font size="6"><b>Open Slinky</b></font>
   <br>
   <font size="3">by Skid Solutions</font>
-  <br>
-  <font size="2">credits to xmqr0 & hitsconfig</font>
 </p>
 
 ---
@@ -24,50 +22,36 @@
 ---
 
 <p align="center">
-  <img src="assets/proof.png" alt="proof" width="500" />
+  <img src="assets/proof.png" alt="proof" />
 </p>
 
 ---
 
+## Supported clients (Minecraft 1.8.9)
+
+| Client | Names the game uses | Payload used |
+|---|---|---|
+| Vanilla (Mojang launcher) | notch (`ave`) | official |
+| OptiFine (standalone) | notch (`ave`) | official |
+| Lunar Client | notch (`ave`) | official |
+| Badlion Client | notch (`ave`) | official |
+| Forge (and OptiFine on Forge) | SRG (`func_71410_x`) | srg |
+| MCP/dev environment | MCP (`getMinecraft`) | named |
+
+The loader inspects the running JVM and chooses the payload automatically. Check
+`%TEMP%\slinky-<pid>\slinky-native.log` - it shows the detected namespace, e.g.
+`detected Minecraft 1.8.9 with official names (class ave, ...)`.
+
 ## How to build
 
-### Prerequisites
-- **C++ Compiler**: Visual Studio 2019 / 2022 (MSVC with C++17 support)
-- **CMake**: Version 3.15 or newer
-- **Java Development Kit**:
-  - **JDK 17**: Required by Gradle to compile `SlinkyClient`
-  - **JDK 8**: Runtime environment for Minecraft 1.8.9
-
----
-
-### 1. Building the Loader (`Slinky.exe` & `SlinkyNative.dll`)
-
-The loader and native injector DLL are configured as a unified CMake project:
+Prerequisites: Visual Studio 2019/2022 (or Build Tools) with **Desktop development with C++**, and CMake 3.15+.
+No Java/Gradle is needed - the three payload jars are prebuilt in `SlinkyNative/payload`.
 
 ```powershell
-cmake -B build -A x64
-
-cmake --build build --config Release
+powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-Output binaries will be placed in `build/bin/Release/`:
-- `Slinky.exe`
-- `SlinkyNative.dll`
+Output: `dist\Slinky.exe` + `dist\SlinkyNative.dll` (keep them in the same folder).
+Manual build: `cmake -S . -B build -A x64` then `cmake --build build --config Release`.
 
----
-
-### 2. Building the Client (`SlinkyClient`)
-
-The client is a standalone Gradle project using [Unimined](https://github.com/unimined/Unimined) to resolve Minecraft 1.8.9 dependencies and MCP mappings automatically:
-
-```powershell
-cd SlinkyClient
-
-$env:JAVA_HOME = "C:\Program Files\Java\jdk-17"
-
-.\gradlew.bat clean build
-```
-
-Generated `SlinkyClient/build/libs/`:
-- `Slinky-0.5.0-settings.jar`
-- `Slinky-0.5.0-settings-sources.jar`
+Rebuilding the Java client (`SlinkyClient`) with Gradle (JDK 17) only produces the *named* jar; see CHANGES.md.

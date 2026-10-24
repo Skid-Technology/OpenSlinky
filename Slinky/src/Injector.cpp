@@ -161,7 +161,9 @@ bool Injector::MonitorStartup(DWORD pid, const std::wstring& logPath) {
 
     ConsoleUI::SetStatusText("Still loading...");
     DWORD startTime = GetTickCount();
-    const DWORD timeoutMs = 30000;
+    // Bootstrap.start can wait up to 2 minutes for the client thread to run the scheduled
+    // init task (Bootstrap.java); the monitor must outlive that window plus margin.
+    const DWORD timeoutMs = 150000;
 
     while (GetTickCount() - startTime < timeoutMs) {
         if (hProcess && WaitForSingleObject(hProcess, 0) == WAIT_OBJECT_0) {

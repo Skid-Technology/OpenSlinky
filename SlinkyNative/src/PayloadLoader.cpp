@@ -30,11 +30,12 @@ InjectionStatus PayloadLoader::LoadAndStart(HMODULE hModule, const MinecraftInfo
         return InjectionStatus::Failed;
     }
 
-    // Add JAR to ClassLoader
+    // Add JAR to ClassLoader (best-effort only: on Java 9+ the system loader and many custom
+    // loaders (e.g. Badlion on JDK 17) are not java.net.URLClassLoader, so addURL legitimately
+    // fails. DefinePayloadClasses below defines every dev.slinky class directly, so the payload
+    // does not depend on this succeeding.
     if (!AddJarToClassLoader(env, mcInfo.classLoader, jarPath)) {
-        DeleteFileW(jarPath.c_str());
-        Logger::Log(L"FINAL STATUS: FAILED");
-        return InjectionStatus::Failed;
+        Logger::Log(L"game class loader did not accept the payload jar; continuing with direct class definition");
     }
 
     // Read and define dev.slinky classes
@@ -250,7 +251,8 @@ bool PayloadLoader::AddJarToClassLoader(JNIEnv* env, jobject classLoader, const 
     jclass uclClass = env->FindClass("java/net/URLClassLoader");
     if (uclClass) {
         jmethodID addURLMethod = env->GetMethodID(uclClass, "addURL", "(Ljava/net/URL;)V");
-        if (addURLMethod) {
+        env->ExceptionClear();
+        if (addURLMethod && env->IsInstanceOf(classLoader, uclClass)) {
             env->CallVoidMethod(classLoader, addURLMethod, urlObj);
             if (!env->ExceptionCheck()) {
                 Logger::Log(L"payload added to the game class loader (addURL)");
@@ -273,7 +275,8 @@ bool PayloadLoader::AddJarToClassLoader(JNIEnv* env, jobject classLoader, const 
                 jclass sysUcl = env->FindClass("java/net/URLClassLoader");
                 if (sysUcl) {
                     jmethodID addURL = env->GetMethodID(sysUcl, "addURL", "(Ljava/net/URL;)V");
-                    if (addURL) {
+                    env->ExceptionClear();
+                    if (addURL && env->IsInstanceOf(sysCl, sysUcl)) {
                         env->CallVoidMethod(sysCl, addURL, urlObj);
                         if (!env->ExceptionCheck()) {
                             Logger::Log(L"payload appended to the system class loader search");
@@ -337,10 +340,16 @@ bool PayloadLoader::DefinePayloadClasses(JNIEnv* env, jobject classLoader, const
         return false;
     }
 
-    jobject entries = env->CallObjectMethod(jarObj, jarEntries);
-    size_t definedCount = 0;
-    size_t unresolvedCount = 0;
+    // ---- stage 1: read every dev/slinky class into memory first ----
+    struct PendingDef {
+        std::string name;                       // internal name e.g. dev/slinky/inject/Bootstrap
+        std::vector<unsigned char> bytes;
+        bool done = false;
+        std::string error;
+    };
+    std::vector<PendingDef> pending;
 
+    jobject entries = env->CallObjectMethod(jarObj, jarEntries);
     jbyteArray buffer = env->NewByteArray(4096);
 
     while (entries && env->CallBooleanMethod(entries, enumHasMore)) {
@@ -355,7 +364,8 @@ bool PayloadLoader::DefinePayloadClasses(JNIEnv* env, jobject classLoader, const
                 env->ReleaseStringUTFChars(nameStr, nameChars);
 
                 if (entryName.rfind("dev/slinky/", 0) == 0 && entryName.size() > 6 && entryName.substr(entryName.size() - 6) == ".class") {
-                    std::string internalName = entryName.substr(0, entryName.size() - 6);
+                    PendingDef item;
+                    item.name = entryName.substr(0, entryName.size() - 6);
 
                     // Read bytes
                     jobject inputStream = env->CallObjectMethod(jarObj, jarGetInputStream, entry);
@@ -371,18 +381,8 @@ bool PayloadLoader::DefinePayloadClasses(JNIEnv* env, jobject classLoader, const
                             jsize byteLen = env->GetArrayLength(classBytesArr);
                             jbyte* rawBytes = env->GetByteArrayElements(classBytesArr, nullptr);
                             if (rawBytes) {
-                                jclass definedClass = env->DefineClass(internalName.c_str(), classLoader, rawBytes, byteLen);
-                                if (!definedClass) {
-                                    env->ExceptionClear();
-                                    definedClass = env->DefineClass(nullptr, classLoader, rawBytes, byteLen);
-                                }
-                                if (definedClass) {
-                                    definedCount++;
-                                    env->DeleteLocalRef(definedClass);
-                                } else {
-                                    unresolvedCount++;
-                                }
-                                env->ExceptionClear();
+                                item.bytes.assign((const unsigned char*)rawBytes,
+                                                  (const unsigned char*)rawBytes + byteLen);
                                 env->ReleaseByteArrayElements(classBytesArr, rawBytes, JNI_ABORT);
                             }
                             env->DeleteLocalRef(classBytesArr);
@@ -390,18 +390,88 @@ bool PayloadLoader::DefinePayloadClasses(JNIEnv* env, jobject classLoader, const
                         env->DeleteLocalRef(baos);
                         env->DeleteLocalRef(inputStream);
                     }
+                    pending.push_back(std::move(item));
                 }
             }
             env->DeleteLocalRef(nameStr);
         }
         env->DeleteLocalRef(entry);
     }
-
     env->DeleteLocalRef(buffer);
+    if (entries) env->DeleteLocalRef(entries);
     env->CallVoidMethod(jarObj, jarClose);
     env->DeleteLocalRef(jarObj);
+    env->DeleteLocalRef(jarFileClass);
+    env->DeleteLocalRef(zipEntryClass);
+    env->DeleteLocalRef(enumerationClass);
+    env->DeleteLocalRef(isClass);
+    env->DeleteLocalRef(baosClass);
 
-    Logger::Log(L"defined %zu new payload classes in the game class loader; %zu unresolved", definedCount, unresolvedCount);
+    Logger::Log(L"staged %zu payload classes for definition", pending.size());
+
+    // ---- stage 2: define with retry passes. The game class loader cannot lazy-load the
+    // payload jar when addURL was rejected (e.g. Badlion's non-URLClassLoader on JDK 17),
+    // so classes referencing other payload classes must be defined in dependency-aware passes.
+    env->EnsureLocalCapacity(512);
+    size_t definedTotal = 0;
+    int pass = 0;
+    const int kMaxPasses = 32;
+    while (pass < kMaxPasses) {
+        size_t definedThisPass = 0;
+        pass++;
+        for (auto& item : pending) {
+            if (item.done) continue;
+            jclass definedClass = env->DefineClass(item.name.c_str(), classLoader,
+                (const jbyte*)item.bytes.data(), (jsize)item.bytes.size());
+            if (!definedClass) {
+                env->ExceptionClear();
+                definedClass = env->DefineClass(nullptr, classLoader,
+                    (const jbyte*)item.bytes.data(), (jsize)item.bytes.size());
+            }
+            if (definedClass) {
+                item.done = true;
+                definedThisPass++;
+                env->DeleteLocalRef(definedClass);
+            } else {
+                jthrowable ex = env->ExceptionOccurred();
+                if (ex) {
+                    jclass exClass = env->GetObjectClass(ex);
+                    jmethodID toString = env->GetMethodID(exClass, "toString", "()Ljava/lang/String;");
+                    if (toString) {
+                        jstring msg = (jstring)env->CallObjectMethod(ex, toString);
+                        if (msg) {
+                            const char* chars = env->GetStringUTFChars(msg, nullptr);
+                            if (chars) {
+                                item.error = chars;
+                                env->ReleaseStringUTFChars(msg, chars);
+                            }
+                            env->DeleteLocalRef(msg);
+                        }
+                    }
+                    env->ExceptionClear();
+                    env->DeleteLocalRef(exClass);
+                    env->DeleteLocalRef(ex);
+                } else {
+                    env->ExceptionClear();
+                }
+            }
+        }
+        definedTotal += definedThisPass;
+        if (definedThisPass == 0) break;
+    }
+
+    size_t unresolved = 0;
+    int logged = 0;
+    for (const auto& item : pending) {
+        if (item.done) continue;
+        unresolved++;
+        if (logged < 6) {
+            Logger::Log(L"unresolved %hs -> %hs", item.name.c_str(), item.error.c_str());
+            logged++;
+        }
+    }
+
+    Logger::Log(L"defined %zu payload classes in the game class loader after %d passes; %zu unresolved", definedTotal, pass, unresolved);
     return true;
 }
 
