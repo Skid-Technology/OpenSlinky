@@ -1,8 +1,0 @@
-#include "include/Resource.h"
-
-// If the payload jars exist at build time, embed them as RT_RCDATA (10)
-#ifdef EMBED_PAYLOAD_JARS
-IDR_PAYLOAD_NAMED    RCDATA "payload/slinky-named.jar"
-IDR_PAYLOAD_SRG      RCDATA "payload/slinky-srg.jar"
-IDR_PAYLOAD_OFFICIAL RCDATA "payload/slinky-official.jar"
-#endif

@@ -1,34 +1,5 @@
-# CMake build directories
 build/
-bin/
-lib/
-out/
-CMakeSettings.json
-
-# Visual Studio files
-.vs/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-*.opensdf
-*.sdf
-*.VC.db
-*.VC.opendb
-
-# Gradle and JVM files
-.gradle/
-**/build/
-*.class
-*.log
-
-# Eclipse / IDE metadata
-.settings/
-.classpath
-.project
-
-# Temporary / backup files
-*.tmp
-*.bak
-*.swp
-*~
+injector/build-*/
+__pycache__/
+*.pyc
+decrypted files/
