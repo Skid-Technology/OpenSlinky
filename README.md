@@ -21,6 +21,8 @@
   <img src="assets/deobf.jpg" alt="readable names" height="150" />
 </p>
 
+This is a very accurate reconstruction based on Slinky behavior on runtime. However this doesn't contain any generated AI artifacts that weren't there on the original Slinky.
+
 ---
 
 ## About
